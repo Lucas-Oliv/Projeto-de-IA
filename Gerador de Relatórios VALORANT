@@ -1,0 +1,393 @@
+# ==============================================================================
+#
+# SÍNTESE:
+# Este script realiza a coleta de dados de estatísticas de jogadores e equipes
+# do jogo VALORANT a partir do site VLR.gg. Ele processa, limpa, e armazena
+# os dados em cache. Em seguida, gera relatórios comparativos e individuais,
+# incluindo análises estatísticas (Teste-T) e visualizações de dados
+# (boxplots, gráficos de linha, heatmaps) para fornecer insights aprofundados
+# sobre o desempenho no cenário competitivo. Esse codigo é uma versao beta, nada
+# ainda esta sendo usado realmente. Trabalho somente academico.
+#
+# ==============================================================================
+
+import requests
+import pandas as pd
+from bs4 import BeautifulSoup
+import re
+import os
+import numpy as np
+import matplotlib
+matplotlib.use('Agg') # Define o backend para não interativo ANTES de importar pyplot
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime, timedelta
+from scipy.stats import ttest_ind
+
+# ==============================================================================
+# --- CONFIGURAÇÕES E FONTES DE DADOS ---
+# ==============================================================================
+
+# Defina se o script deve ignorar o cache e baixar os dados da web
+FORCAR_ATUALIZACAO = False
+
+# Dicionário de URLs de eventos para coleta de dados históricos
+FONTES_DE_DADOS = {
+    # 2025
+    "masters_toronto_2025": "https://www.vlr.gg/event/stats/2282/valorant-masters-toronto-2025",
+    "americas_kickoff_2025": "https://www.vlr.gg/event/stats/2274/vct-2025-americas-kickoff",
+    "pacific_kickoff_2025": "https://www.vlr.gg/event/stats/2277/vct-2025-pacific-kickoff",
+    "vct_americas_2025_s1": "https://www.vlr.gg/event/stats/2347/vct-2025-americas-stage-1",
+    "vct_pacific_2025_s1": "https://www.vlr.gg/event/stats/2379/vct-2025-pacific-stage-1",
+    "vct_americas_2025_s2": "https://www.vlr.gg/event/stats/2501/vct-2025-americas-stage-2",
+    "vct_pacific_2025_s2": "https://www.vlr.gg/event/stats/2500/vct-2025-pacific-stage-2",
+    "vct_emea_2025_s1": "https://www.vlr.gg/event/stats/2380/vct-2025-emea-stage-1",
+    "vct_emea_2025_s2": "https://www.vlr.gg/event/stats/2498/vct-2025-emea-stage-2",
+    # 2024
+    "champions_2024": "https://www.vlr.gg/event/stats/2097/valorant-champions-2024",
+    "americas_s2_2024": "https://www.vlr.gg/event/stats/2095/champions-tour-2024-americas-stage-2",
+    "pacific_s2_2024": "https://www.vlr.gg/event/stats/2005/champions-tour-2024-pacific-stage-2",
+    "masters_shanghai_2024": "https://www.vlr.gg/event/stats/1999/champions-tour-2024-masters-shanghai",
+    "americas_s1_2024": "https://www.vlr.gg/event/stats/2004/champions-tour-2024-americas-stage-1",
+    "pacific_s1_2024": "https://www.vlr.gg/event/stats/2002/champions-tour-2024-pacific-stage-1",
+    "masters_madrid_2024": "https://www.vlr.gg/event/stats/1921/champions-tour-2024-masters-madrid",
+    "americas_kickoff_2024": "https://www.vlr.gg/event/stats/1923/champions-tour-2024-americas-kickoff",
+    "pacific_kickoff_2024": "https://www.vlr.gg/event/stats/1924/champions-tour-2024-pacific-kickoff",
+    # 2023
+    "champions_2023": "https://www.vlr.gg/event/stats/1657/valorant-champions-2023",
+    "masters_tokyo_2023": "https://www.vlr.gg/event/stats/1494/champions-tour-2023-masters-tokyo",
+    "americas_league_2023": "https://www.vlr.gg/event/stats/1189/champions-tour-2023-americas-league",
+    "pacific_league_2023": "https://www.vlr.gg/event/stats/1191/champions-tour-2023-pacific-league",
+    "lock_in_sao_paulo_2023": "https://www.vlr.gg/event/stats/1188/champions-tour-2023-lock-in-s-o-paulo",
+    # 2022
+    "champions_2022": "https://www.vlr.gg/event/stats/1015/valorant-champions-2022",
+    "masters_copenhagen_2022": "https://www.vlr.gg/event/stats/1014/valorant-champions-tour-stage-2-masters-copenhagen",
+    "br_challengers_s2_2022": "https://www.vlr.gg/event/stats/911/champions-tour-brazil-stage-2-challengers",
+    "asia_pacific_s2_2022": "https://www.vlr.gg/event/stats/1063/champions-tour-asia-pacific-stage-2-challengers-playoffs",
+    "masters_reykjavik_2022": "https://www.vlr.gg/event/stats/926/valorant-champions-tour-stage-1-masters-reykjav-k",
+    "br_challengers_s1_2022": "https://www.vlr.gg/event/stats/829/champions-tour-brazil-stage-1-challengers-1",
+    "asia_pacific_challengers_s1_2022": "https://www.vlr.gg/event/stats/884/champions-tour-asia-pacific-stage-1-challengers-playoffs",
+}
+
+# --- CONFIGURAÇÃO DOS RELATÓRIOS A SEREM GERADOS ---
+RELATORIOS_CONFIG = [
+    {
+        'nome_relatorio': 'Comparativo_Jingg_vs_Aspas_Completo',
+        'tipo': 'jogador',
+        'nomes': ['Jinggg', 'aspas'],
+        'eventos': 'todos'
+    },
+    {
+        'nome_relatorio': 'Comparativo_Aspas_vs_Sato_2025_S2',
+        'tipo': 'jogador',
+        'nomes': ['aspas', 'Sato'],
+        'eventos': ['vct_americas_2025_s2'] 
+    },
+    {
+        'nome_relatorio': 'Comparativo_Less_vs_Lukxo_2025_Americas',
+        'tipo': 'jogador',
+        'nomes': ['Less', 'Lukxo'],
+        'eventos': ['vct_americas_2025_s1', 'vct_americas_2025_s2'] 
+    },
+    {
+        'nome_relatorio': 'Comparativo_LOUD_vs_PaperRex',
+        'tipo': 'equipa',
+        'nomes': ['LOUD', 'PRX'],
+        'eventos': 'todos'
+    },
+    {
+        'nome_relatorio': 'Relatorio_Solo_Aspas',
+        'tipo': 'jogador',
+        'nomes': ['aspas'],
+        'eventos': 'todos'
+    },
+    {
+        'nome_relatorio': 'Relatorio_Solo_Sato',
+        'tipo': 'jogador',
+        'nomes': ['Sato'],
+        'eventos': 'todos'
+    }
+]
+
+
+# ==============================================================================
+# --- FUNÇÕES DE COLETA E PROCESSAMENTO ---
+# ==============================================================================
+
+def get_vlr_stats_data(url, nome_campeonato):
+    """Busca as estatísticas dos jogadores de uma URL do VLR.gg."""
+    print(f"-> Coletando dados de: {nome_campeonato}...")
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"}
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, 'lxml')
+        stats_table = soup.find('table', class_='mod-stats')
+        if not stats_table: return None
+        
+        table_headers = [th.get_text(strip=True) for th in stats_table.find('thead').find_all('th')]
+        rows = []
+        for tr in stats_table.find('tbody').find_all('tr'):
+            cells = tr.find_all('td')
+            if not cells: continue
+            player_name_div = cells[0].find('div', class_='text-of')
+            if not player_name_div: continue
+            player_name = player_name_div.get_text(strip=True)
+            team_name = cells[0].find('div', class_='stats-player-country').get_text(strip=True)
+            agents = [re.search(r'/([^/]+)\.png', img.get('src', '')).group(1).capitalize() for img in cells[1].find_all('img') if re.search(r'/([^/]+)\.png', img.get('src', ''))]
+            row_data = [player_name, team_name, ', '.join(agents) if agents else 'N/A'] + [cell.get_text(strip=True) for cell in cells[2:]]
+            rows.append(row_data)
+# ==============================================================================
+# A Tartaruga Sábia dos Dados emergiu para abençoar este código.
+
+        df = pd.DataFrame(rows, columns=['Player', 'Team', 'Agents'] + table_headers[2:])
+        df['Campeonato'] = nome_campeonato
+        return df
+    except Exception as e:
+        print(f"ERRO ao processar a URL {url}: {e}")
+        return None
+
+def clean_and_convert_data(df):
+    """Limpa e converte as colunas do DataFrame para os tipos corretos."""
+    if df is None or df.empty: return None
+    
+    rename_map = {'Team': 'Equipa', 'Agents': 'Agente', 'Rnd': 'Rounds', 'ACS': 'ACS', 'K:D': 'KD', 'KAST': 'KAST', 'ADR': 'ADR', 'KPR': 'KPR', 'APR': 'APR', 'FKPR': 'FKPR', 'FDPR': 'FDPR', 'HS%': 'HS%'}
+    df = df.rename(columns=rename_map)
+    
+    # Lista de colunas que devem ser numéricas. Adicione outras se necessário.
+    cols_to_process = ['Rounds', 'ACS', 'KD', 'ADR', 'KPR', 'APR', 'FKPR', 'FDPR', 'KAST', 'HS%']
+    
+    for col in cols_to_process:
+        if col in df.columns:
+            # Garante que a coluna é do tipo string antes de usar .str
+            df[col] = df[col].astype(str).str.replace('%', '', regex=False)
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+    return df
+
+# ==============================================================================
+# --- FUNÇÕES DE ANÁLISE E VISUALIZAÇÃO DE DADOS ---
+# ==============================================================================
+
+def analisar_qualidade_dados(df):
+    """Executa e exibe uma análise básica da qualidade dos dados."""
+    print("\n--- Análise de Qualidade de Dados (Geral) ---")
+    
+    valores_ausentes = df.isnull().sum()
+    valores_ausentes = valores_ausentes[valores_ausentes > 0]
+    if not valores_ausentes.empty:
+        print("\n[!] Valores Ausentes Encontrados:\n", valores_ausentes)
+    else:
+        print("\n[✓] Nenhum valor ausente encontrado.")
+
+    duplicados = df.duplicated().sum()
+    if duplicados > 0:
+        print(f"\n[!] Encontrados {duplicados} registos duplicados.")
+    else:
+        print("\n[✓] Nenhum registo duplicado encontrado.")
+    print("---------------------------------------------")
+
+def realizar_teste_t(df, categoria):
+    """Realiza um teste T para verificar a significância da diferença de ACS."""
+    grupos = df[categoria].unique()
+    if len(grupos) != 2:
+        return "" # Retorna vazio se não for uma comparação entre dois grupos
+
+    dados_grupo1 = df[df[categoria] == grupos[0]]['ACS'].dropna()
+    dados_grupo2 = df[df[categoria] == grupos[1]]['ACS'].dropna()
+
+    if len(dados_grupo1) < 2 or len(dados_grupo2) < 2:
+        return "\n\n**Nota:** Não foi possível realizar o teste de significância estatística por falta de dados (campeonatos múltiplos) para ambos os alvos."
+
+    stat, p_valor = ttest_ind(dados_grupo1, dados_grupo2, equal_var=False) # Welch's t-test
+
+    resultado = "\n\n## Análise de Significância Estatística (Teste-T)\n\n"
+    resultado += f"- O p-valor para a diferença de ACS entre **{grupos[0]}** e **{grupos[1]}** é de **{p_valor:.4f}**.\n"
+#           .--.
+#          |o_o |
+#          |:_/ |
+#         //   \ \
+#        (|     | )
+#       /'\_   _/`\
+#       \_J_)=(_K_/
+#
+    if p_valor < 0.05:
+        resultado += "- **Conclusão:** Como o p-valor é menor que 0.05, a diferença nas médias de ACS é considerada **estatisticamente significativa**."
+    else:
+        resultado += "- **Conclusão:** Como o p-valor é maior que 0.05, a diferença nas médias de ACS **não é estatisticamente significativa**, podendo ser atribuída ao acaso."
+    return resultado
+
+def gerar_analises_visuais(df, categoria, nome_relatorio):
+    """Gera e salva um conjunto completo de gráficos para a análise."""
+    print("-> Gerando visualizações avançadas...")
+    sns.set_theme(style="whitegrid")
+    
+    # Gráficos Comparativos Básicos
+    metricas_boxplot = ['ACS', 'KD', 'ADR', 'KAST'] 
+    for metrica in metricas_boxplot:
+        plt.figure(figsize=(10, 6))
+        sns.boxplot(data=df, x=categoria, y=metrica)
+        plt.title(f'Distribuição de {metrica} por {categoria}')
+        plt.tight_layout()
+        plt.savefig(os.path.join(nome_relatorio, f"boxplot_{metrica.lower()}.png"))
+        plt.close()
+
+    # Gráfico de Evolução ao Longo do Tempo
+    if df['Campeonato'].nunique() > 1:
+        # Gráfico para ACS
+        plt.figure(figsize=(12, 7))
+        sns.lineplot(data=df, x='Campeonato', y='ACS', hue=categoria, marker='o', errorbar=None)
+        plt.title(f'Evolução do ACS por Campeonato')
+        plt.xticks(rotation=45, ha="right")
+        plt.tight_layout()
+        plt.savefig(os.path.join(nome_relatorio, "evolucao_acs_tempo.png"))
+        plt.close()
+
+        # Gráfico para KAST
+        plt.figure(figsize=(12, 7))
+        sns.lineplot(data=df, x='Campeonato', y='KAST', hue=categoria, marker='o', errorbar=None)
+        plt.title(f'Evolução do KAST por Campeonato')
+        plt.xticks(rotation=45, ha="right")
+        plt.tight_layout()
+        plt.savefig(os.path.join(nome_relatorio, "evolucao_kast_tempo.png"))
+        plt.close()
+
+# Com seu casco de paciência e olhos que enxergam a verdade nos números,
+# ela guia a análise para conclusões claras e precisas.
+
+    # Heatmap de Correlação
+    numeric_df = df.select_dtypes(include=np.number).drop(columns=['Rounds'], errors='ignore')
+    if not numeric_df.empty and len(numeric_df) > 1:
+        plt.figure(figsize=(12, 8))
+        sns.heatmap(numeric_df.corr(), annot=True, cmap='coolwarm', fmt=".2f")
+        plt.title('Mapa de Calor de Correlação entre Métricas')
+        plt.tight_layout()
+        plt.savefig(os.path.join(nome_relatorio, "heatmap_correlacao.png"))
+        plt.close()
+
+    print("-> Visualizações geradas com sucesso!")
+
+# ==============================================================================
+# --- FUNÇÕES DE GERAÇÃO DE RELATÓRIOS ---
+# ==============================================================================
+
+def gerar_relatorio_jogador(df, nomes_jogadores, nome_relatorio):
+    """Gera um relatório completo para os jogadores especificados."""
+    os.makedirs(nome_relatorio, exist_ok=True)
+    nomes_lower = [nome.lower() for nome in nomes_jogadores]
+    df_jogadores = df[df['Player'].str.lower().isin(nomes_lower)].copy()
+
+    if df_jogadores.empty:
+        print(f"AVISO: Nenhum jogador encontrado para o relatório '{nome_relatorio}'.")
+        return
+
+    gerar_analises_visuais(df_jogadores, 'Player', nome_relatorio)
+
+    mapa_capitalizacao = {nome.lower(): nome for nome in reversed(nomes_jogadores)}
+    df_jogadores['Player_lower_temp'] = df_jogadores['Player'].str.lower()
+    
+    agg_funcs = { 'Rounds': 'sum', 'ACS': lambda x: np.average(x, weights=df_jogadores.loc[x.index, 'Rounds']), 'KD': lambda x: np.average(x, weights=df_jogadores.loc[x.index, 'Rounds']), 'ADR': lambda x: np.average(x, weights=df_jogadores.loc[x.index, 'Rounds']), 'KAST': lambda x: np.average(x, weights=df_jogadores.loc[x.index, 'Rounds']) }
+    dados_agregados = df_jogadores.groupby('Player_lower_temp').agg(agg_funcs)
+    dados_agregados = dados_agregados.rename(index=mapa_capitalizacao).reindex(nomes_jogadores)
+    dados_agregados.index.name = 'Jogador'
+    
+    report_title = f"Relatório Comparativo: {' vs '.join(nomes_jogadores)}" if len(nomes_jogadores) > 1 else f"Relatório de Desempenho: {nomes_jogadores[0]}"
+    report_subtitle = "Este relatório compara as médias de desempenho dos jogadores." if len(nomes_jogadores) > 1 else "Este relatório apresenta a média de desempenho do jogador."
+    report_content = f"# {report_title}\n\n{report_subtitle}\n\n"
+    report_content += dados_agregados.to_markdown(floatfmt=".2f")
+    
+    if len(nomes_jogadores) > 1:
+        veredito = "\n\n## Veredito Rápido\n\n"
+        if not dados_agregados.dropna().empty and len(dados_agregados) > 1:
+            melhor_acs = dados_agregados['ACS'].idxmax()
+            melhor_kd = dados_agregados['KD'].idxmax()
+            veredito += f"- **Maior Impacto (ACS):** {melhor_acs} ({dados_agregados.loc[melhor_acs, 'ACS']:.2f})\n"
+            veredito += f"- **Melhor Eficiência (K/D):** {melhor_kd} ({dados_agregados.loc[melhor_kd, 'KD']:.2f})\n"
+        else:
+            veredito += "- Não foi possível gerar um veredito por falta de dados.\n"
+        report_content += veredito
+        report_content += realizar_teste_t(df_jogadores, 'Player')
+
+    md_path = os.path.join(nome_relatorio, f"{nome_relatorio}.md")
+    with open(md_path, "w", encoding="utf-8") as f: f.write(report_content)
+    print(f"-> Relatório MD '{md_path}' gerado!")
+
+    dados_agregados.to_csv(os.path.join(nome_relatorio, f"{nome_relatorio}_geral.csv"), float_format="%.2f")
+    df_jogadores.drop(columns=['Player_lower_temp'], errors='ignore').to_csv(os.path.join(nome_relatorio, f"{nome_relatorio}_detalhado.csv"), index=False)
+    print(f"-> Relatórios CSV gerados!")
+
+def gerar_relatorio_equipa(df, nomes_equipas, nome_relatorio):
+    """Gera um relatório completo para as equipas especificadas."""
+    os.makedirs(nome_relatorio, exist_ok=True)
+    nomes_lower = [nome.lower() for nome in nomes_equipas]
+    df_equipas = df[df['Equipa'].str.lower().isin(nomes_lower)].copy()
+
+    if df_equipas.empty:
+        print(f"AVISO: Nenhuma equipa encontrada para o relatório '{nome_relatorio}'.")
+        return
+
+    gerar_analises_visuais(df_equipas, 'Equipa', nome_relatorio)
+
+    df_equipas['Equipa_lower_temp'] = df_equipas['Equipa'].str.lower()
+    mapa_capitalizacao = {nome.lower(): nome for nome in reversed(nomes_equipas)}
+    dados_agregados = df_equipas.groupby('Equipa_lower_temp')[['ACS', 'KD', 'ADR', 'KAST']].mean()
+    dados_agregados = dados_agregados.rename(index=mapa_capitalizacao).reindex(nomes_equipas)
+    dados_agregados.index.name = 'Equipa'
+    
+    report_content = f"# Relatório Comparativo: {' vs '.join(nomes_equipas)}\n\n"
+    report_content += "Este relatório compara as médias de desempenho das equipas.\n\n"
+    report_content += dados_agregados.to_markdown(floatfmt=".2f")
+    report_content += realizar_teste_t(df_equipas, 'Equipa')
+
+    md_path = os.path.join(nome_relatorio, f"{nome_relatorio}.md")
+    with open(md_path, "w", encoding="utf-8") as f: f.write(report_content)
+    print(f"-> Relatório MD '{md_path}' gerado!")
+    
+    dados_agregados.to_csv(os.path.join(nome_relatorio, f"{nome_relatorio}_geral.csv"), float_format="%.2f")
+    df_equipas.drop(columns=['Equipa_lower_temp'], errors='ignore').to_csv(os.path.join(nome_relatorio, f"{nome_relatorio}_detalhado.csv"), index=False)
+    print(f"-> Relatórios CSV gerados!")
+
+# ==============================================================================
+# --- EXECUÇÃO PRINCIPAL ---
+# ==============================================================================
+if __name__ == "__main__":
+    
+    CACHE_FILE = "vlr_stats_cache.csv"
+    CACHE_EXPIRATION_HOURS = 24
+    df_completo = None
+
+    if not FORCAR_ATUALIZACAO and os.path.exists(CACHE_FILE):
+        mod_time = datetime.fromtimestamp(os.path.getmtime(CACHE_FILE))
+        if datetime.now() - mod_time < timedelta(hours=CACHE_EXPIRATION_HOURS):
+            print("--- Carregando dados do cache local ---")
+            df_completo = pd.read_csv(CACHE_FILE)
+    
+    if df_completo is None:
+        print("--- Cache inválido, inexistente ou atualização forçada. Coletando dados da web... ---")
+        todos_os_dados = []
+        for nome_evento, url in FONTES_DE_DADOS.items():
+            df_evento = get_vlr_stats_data(url, nome_evento) 
+            if df_evento is not None: todos_os_dados.append(df_evento)
+        
+        if not todos_os_dados:
+            print("\nERRO: Falha ao coletar dados. Nenhum relatório será gerado.")
+            exit()
+        
+        df_completo_raw = pd.concat(todos_os_dados, ignore_index=True)
+        df_completo = clean_and_convert_data(df_completo_raw)
+        df_completo.to_csv(CACHE_FILE, index=False)
+        print(f"--- Dados salvos em cache no arquivo '{CACHE_FILE}' ---")
+
+    analisar_qualidade_dados(df_completo)
+    print("\n--- Processamento iniciado ---")
+
+    for config in RELATORIOS_CONFIG:
+        print(f"\n--- Gerando relatório: {config['nome_relatorio']} ---")
+        df_filtrado = df_completo if config['eventos'] == 'todos' else df_completo[df_completo['Campeonato'].isin(config['eventos'])]
+        
+        if config['tipo'] == 'jogador':
+            gerar_relatorio_jogador(df_filtrado, config['nomes'], config['nome_relatorio'])
+        elif config['tipo'] == 'equipa':
+            gerar_relatorio_equipa(df_filtrado, config['nomes'], config['nome_relatorio'])
+
+    print("\n--- Todos os relatórios foram gerados! ---")
